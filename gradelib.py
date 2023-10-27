@@ -179,6 +179,7 @@ def assert_lines_match(text, *regexps, **kw):
                                   color("green", "GOOD") if lineno in good
                                   else "    ",
                                   lines[lineno]))
+    # msg.append(text)
     if last != len(lines) - 1:
         msg.append("...")
     if bad:

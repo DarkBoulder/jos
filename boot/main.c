@@ -98,7 +98,7 @@ readseg(uint32_t pa, uint32_t count, uint32_t offset)
 void
 waitdisk(void)
 {
-	// wait for disk reaady
+	// wait for disk ready
 	while ((inb(0x1F7) & 0xC0) != 0x40)
 		/* do nothing */;
 }
@@ -109,11 +109,11 @@ readsect(void *dst, uint32_t offset)
 	// wait for disk to be ready
 	waitdisk();
 
-	outb(0x1F2, 1);		// count = 1
+	outb(0x1F2, 1);		// read 1 sector
 	outb(0x1F3, offset);
 	outb(0x1F4, offset >> 8);
 	outb(0x1F5, offset >> 16);
-	outb(0x1F6, (offset >> 24) | 0xE0);
+	outb(0x1F6, (offset >> 24) | 0xE0);  // 最高位为1（即0xE0），表示要读取主硬盘。
 	outb(0x1F7, 0x20);	// cmd 0x20 - read sectors
 
 	// wait for disk to be ready
