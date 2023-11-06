@@ -54,6 +54,12 @@ i386_detect_memory(void)
 
 	cprintf("Physical memory: %uK available, base = %uK, extended = %uK\n",
 		totalmem, basemem, totalmem - basemem);
+
+	cprintf("npages: %u npages_basemem = %u\n",
+		npages, npages_basemem);
+	
+	// Physical memory: 131072K available(0x08000000, 256MB), base = 640K(0x000A0000), extended = 130432K
+	// npages: 32768 npages_basemem = 160
 }
 
 
@@ -95,15 +101,20 @@ boot_alloc(uint32_t n)
 	if (!nextfree) {
 		extern char end[];
 		nextfree = ROUNDUP((char *) end, PGSIZE);
+		cprintf("boot_alloc: extern char end: 0x%x, nextfree: 0x%x\n", end, nextfree);
 	}
-
 	// Allocate a chunk large enough to hold 'n' bytes, then update
 	// nextfree.  Make sure nextfree is kept aligned
 	// to a multiple of PGSIZE.
 	//
 	// LAB 2: Your code here.
-
-	return NULL;
+	if((uint32_t) (nextfree + n) > 0xffffffff){ // not sure
+		panic("boot alloc: out of memeory");
+		return NULL;
+	}
+	result = nextfree;
+	nextfree = ROUNDUP(nextfree + n, PGSIZE);
+	return result;
 }
 
 // Set up a two-level page table:
@@ -125,12 +136,13 @@ mem_init(void)
 	i386_detect_memory();
 
 	// Remove this line when you're ready to test this function.
-	panic("mem_init: This function is not finished\n");
+	//panic("mem_init: This function is not finished\n");
 
 	//////////////////////////////////////////////////////////////////////
 	// create initial page directory.
 	kern_pgdir = (pde_t *) boot_alloc(PGSIZE);
 	memset(kern_pgdir, 0, PGSIZE);
+	cprintf("mem_init: kern_pgdir: 0x%x\n", kern_pgdir);
 
 	//////////////////////////////////////////////////////////////////////
 	// Recursively insert PD in itself as a page table, to form
@@ -139,6 +151,7 @@ mem_init(void)
 	// following line.)
 
 	// Permissions: kernel R, user R
+	cprintf("PDX(UVPT): 0x%x, PADDR(kern_pgdir): 0x%x\n", PDX(UVPT),  PADDR(kern_pgdir));
 	kern_pgdir[PDX(UVPT)] = PADDR(kern_pgdir) | PTE_U | PTE_P;
 
 	//////////////////////////////////////////////////////////////////////
@@ -148,7 +161,10 @@ mem_init(void)
 	// array.  'npages' is the number of physical pages in memory.  Use memset
 	// to initialize all fields of each struct PageInfo to 0.
 	// Your code goes here:
-
+	pages = (struct PageInfo*)boot_alloc(npages * sizeof(struct PageInfo));
+	memset(pages, 0, npages * sizeof(struct PageInfo));
+	cprintf("mem_init: pages: 0x%x, size: 0x%x\n", pages, npages * sizeof(struct PageInfo));
+	
 
 	//////////////////////////////////////////////////////////////////////
 	// Now that we've allocated the initial kernel data structures, we set
@@ -157,9 +173,9 @@ mem_init(void)
 	// particular, we can now map memory using boot_map_region
 	// or page_insert
 	page_init();
-
 	check_page_free_list(1);
 	check_page_alloc();
+	// panic("mem_init: This function is not finished\n");
 	check_page();
 
 	//////////////////////////////////////////////////////////////////////
@@ -236,27 +252,57 @@ page_init(void)
 {
 	// The example code here marks all physical pages as free.
 	// However this is not truly the case.  What memory is free?
-	//  1) Mark physical page 0 as in use.
+	//  1) Mark physical page 0 as in use. 
 	//     This way we preserve the real-mode IDT and BIOS structures
 	//     in case we ever need them.  (Currently we don't, but...)
+	//  [0x00000000, 0x00001000)
 	//  2) The rest of base memory, [PGSIZE, npages_basemem * PGSIZE)
 	//     is free.
+	//  [0x00001000, 0x000A0000)
 	//  3) Then comes the IO hole [IOPHYSMEM, EXTPHYSMEM), which must
 	//     never be allocated.
+	//  [0x000A0000, 0x00100000)
 	//  4) Then extended memory [EXTPHYSMEM, ...).
 	//     Some of it is in use, some is free. Where is the kernel
 	//     in physical memory?  Which pages are already in use for
 	//     page tables and other data structures?
-	//
+	//	[0x00100000, 0x08000000) the end of physical memory address
 	// Change the code to reflect this.
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
+	
+	// (1)
+	pages[0].pp_ref = 1;
+	pages[0].pp_link = NULL;
+
+	// (2)
 	size_t i;
-	for (i = 0; i < npages; i++) {
+	for (i = 1; i < npages_basemem; i++) {
 		pages[i].pp_ref = 0;
 		pages[i].pp_link = page_free_list;
 		page_free_list = &pages[i];
 	}
+
+	//(3)
+	for (; i < EXTPHYSMEM / PGSIZE; i++) {
+		pages[i].pp_ref = 1;
+		pages[i].pp_link = NULL;
+	}
+
+	//(4) first, get the starting free pointer addr:
+	size_t nxt_free = (size_t)PADDR((void*)boot_alloc(0));
+	cprintf("nxt_free: 0x%x\n", nxt_free);
+	for (; i < nxt_free / PGSIZE; i++) {
+		pages[i].pp_ref = 1;
+		pages[i].pp_link = NULL;
+	}
+	// then, get to the end
+	for (; i < npages; i++) {
+		pages[i].pp_ref = 0;
+		pages[i].pp_link = page_free_list;
+		page_free_list = &pages[i];
+	}
+	cprintf("page_free_list: 0x%x\n", page_free_list);
 }
 
 //
@@ -275,7 +321,16 @@ struct PageInfo *
 page_alloc(int alloc_flags)
 {
 	// Fill this function in
-	return 0;
+	if (!page_free_list) { // out of free memory
+		return NULL;
+	}
+	struct PageInfo * res = page_free_list;
+	page_free_list = res->pp_link;
+	res->pp_link = NULL; 
+	if (alloc_flags & ALLOC_ZERO) {
+		memset(page2kva(res), 0, PGSIZE);
+	}
+	return res;
 }
 
 //
@@ -288,6 +343,11 @@ page_free(struct PageInfo *pp)
 	// Fill this function in
 	// Hint: You may want to panic if pp->pp_ref is nonzero or
 	// pp->pp_link is not NULL.
+	if (pp->pp_ref != 0 || pp->pp_link) {
+		panic("page_free: page is not valid!");
+	} 
+	pp->pp_link = page_free_list;
+	page_free_list = pp;
 }
 
 //
@@ -327,6 +387,7 @@ pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
 	// Fill this function in
+	
 	return NULL;
 }
 
